@@ -1,0 +1,391 @@
+import { useState } from "react";
+import { AppShell } from "./AppShell";
+import { NetworkSettings } from "./NetworkSettings";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Copy, Download, Eye, EyeOff, Loader2, Lock, Plus, ShieldOff, Trash2, Upload, X } from "lucide-react";
+import { loadKeyPair, privateKeyPem, publicKeyPem, type NumailKeyPair } from "@/lib/numail/keys";
+import { useEffect } from "react";
+import { CONSTANTS, DEFAULT_FOLDERS, type MailboxPolicy, type PolicyKind } from "@/lib/numail/types";
+import { useNumail } from "@/lib/numail/provider";
+import { GLOSSARY, Hint, policyLabel, shortAddr } from "./shared";
+import { ExportKeyDialog, ImportKeyDialog } from "./KeyBackupDialogs";
+import { ContactsPanel, DisplayNamePanel } from "./ProfilePanels";
+
+export function SettingsPage() {
+  const { ledger, account, actions, busy, balance, directory } = useNumail();
+  const mailbox = account ? ledger.mailboxes[account.address] : undefined;
+  const blocklist = account ? (ledger.blocklists[account.address] ?? []) : [];
+
+  const [kind, setKind] = useState<PolicyKind>(mailbox?.policy.kind ?? "Open");
+  const [trust, setTrust] = useState(String(mailbox?.policy.minTrustScore ?? 50));
+  const [postage, setPostage] = useState(String(mailbox?.policy.postage ?? 500));
+  const [retention, setRetention] = useState(mailbox?.retention ? String(mailbox.retention) : "");
+  const [newFolder, setNewFolder] = useState("");
+  const [blockInput, setBlockInput] = useState("");
+  const [resetOpen, setResetOpen] = useState(false);
+  const [keys, setKeys] = useState<NumailKeyPair | null>(null);
+  const [showPrivate, setShowPrivate] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const folderName = newFolder.trim().toLowerCase();
+  const folderNameError = !folderName
+    ? null
+    : new TextEncoder().encode(folderName).length > CONSTANTS.MaxFolderNameBytes
+      ? `Folder names are limited to ${CONSTANTS.MaxFolderNameBytes} bytes.`
+      : mailbox?.folders.includes(folderName)
+        ? "You already have a folder with that name."
+        : null;
+
+  useEffect(() => {
+    setKeys(account ? loadKeyPair(account.address) : null);
+    setShowPrivate(false);
+  }, [account]);
+
+  const savePolicy = async () => {
+    const policy: MailboxPolicy = { kind };
+    if (kind === "MinTrustScore") policy.minTrustScore = Number(trust) || 0;
+    if (kind === "PostageRequired") policy.postage = Number(postage) || 0;
+    await actions.setPolicy(policy, retention ? Number(retention) : undefined).catch(() => undefined);
+  };
+
+  return (
+    <AppShell>
+      <div className="mx-auto w-full max-w-3xl space-y-6 p-4 sm:p-6">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+          <p className="text-sm text-muted-foreground">Network, mailbox policy, folders, blocklist and chain constants.</p>
+        </div>
+
+        <Tabs defaultValue="network">
+          <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:grid-cols-4">
+            <TabsTrigger value="network">Network</TabsTrigger>
+            <TabsTrigger value="mailbox">Mailbox</TabsTrigger>
+            <TabsTrigger value="blocklist">Blocklist</TabsTrigger>
+            <TabsTrigger value="account">Account</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="network" className="mt-4">
+            <div className="surface-panel p-4 sm:p-5">
+              <h2 className="mb-4 text-lg font-semibold">Network settings</h2>
+              <NetworkSettings />
+            </div>
+          </TabsContent>
+
+          <TabsContent value="mailbox" className="mt-4 space-y-4">
+            <div className="surface-panel space-y-4 p-4 sm:p-5">
+              <h2 className="text-lg font-semibold">Acceptance policy</h2>
+              <div className="space-y-2">
+                <Label className="flex items-center gap-1.5">
+                  Policy <Hint>{GLOSSARY.policy}</Hint>
+                </Label>
+                <Select value={kind} onValueChange={(v) => setKind(v as PolicyKind)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Open">Open</SelectItem>
+                    <SelectItem value="ContactsOnly">Contacts only</SelectItem>
+                    <SelectItem value="MinTrustScore">Minimum trust score</SelectItem>
+                    <SelectItem value="PostageRequired">Postage required</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {kind === "MinTrustScore" && (
+                <div className="space-y-2">
+                  <Label htmlFor="trust">Minimum trust score</Label>
+                  <Input id="trust" type="number" value={trust} onChange={(e) => setTrust(e.target.value)} />
+                </div>
+              )}
+              {kind === "PostageRequired" && (
+                <div className="space-y-2">
+                  <Label htmlFor="postage" className="flex items-center gap-1.5">
+                    Required postage <Hint>{GLOSSARY.postage}</Hint>
+                  </Label>
+                  <Input id="postage" type="number" value={postage} onChange={(e) => setPostage(e.target.value)} />
+                </div>
+              )}
+              <div className="space-y-2">
+                <Label htmlFor="retention" className="flex items-center gap-1.5">
+                  Retention window (blocks) <Hint>{GLOSSARY.retention}</Hint>
+                </Label>
+                <Input id="retention" type="number" value={retention} onChange={(e) => setRetention(e.target.value)} />
+              </div>
+              <div className="flex justify-end">
+                <Button onClick={savePolicy} disabled={busy !== null}>
+                  {busy === "set_mailbox_policy" && <Loader2 className="h-4 w-4 animate-spin" />}
+                  Save policy
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">Current on-chain policy: {mailbox ? policyLabel(mailbox.policy) : "—"}</p>
+            </div>
+
+            <div className="surface-panel space-y-3 p-4 sm:p-5">
+              <h2 className="text-lg font-semibold">Folders</h2>
+              <div className="flex flex-wrap gap-1.5">
+                {(mailbox?.folders ?? []).map((f) => (
+                  <Badge key={f} variant="secondary" className="max-w-full gap-1 whitespace-normal wrap-anywhere capitalize">
+                    {f}
+                    {!DEFAULT_FOLDERS.includes(f) && (
+                      <button
+                        type="button"
+                        aria-label={`Delete folder ${f}`}
+                        disabled={busy !== null}
+                        onClick={() => void actions.deleteFolder(f).catch(() => undefined)}
+                      >
+                        {busy === "deleteFolder" ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
+                      </button>
+                    )}
+                  </Badge>
+                ))}
+              </div>
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                <Input
+                  value={newFolder}
+                  placeholder="New folder name"
+                  maxLength={CONSTANTS.MaxFolderNameBytes}
+                  onChange={(e) => setNewFolder(e.target.value)}
+                />
+                <Button
+                  variant="secondary"
+                  disabled={busy !== null || !folderName || Boolean(folderNameError)}
+                  onClick={async () => {
+                    try {
+                      await actions.addFolder(folderName);
+                      setNewFolder("");
+                    } catch {
+                      /* the provider already showed the error toast */
+                    }
+                  }}
+                >
+                  {busy === "createFolder" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                  Add folder
+                </Button>
+              </div>
+              {folderNameError && <p className="text-xs text-destructive">{folderNameError}</p>}
+              <p className="text-xs text-muted-foreground">
+                {mailbox?.folders.length ?? 0} of {CONSTANTS.MaxFolders} folders declared. Inbox, sent and archive are
+                required. A folder can only be deleted when it holds no mail.
+              </p>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="blocklist" className="mt-4">
+            <div className="surface-panel space-y-4 p-4 sm:p-5">
+              <h2 className="text-lg font-semibold">Blocked senders</h2>
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                <Input
+                  value={blockInput}
+                  spellCheck={false}
+                  placeholder="Account address to block"
+                  className="text-mono text-sm"
+                  onChange={(e) => setBlockInput(e.target.value)}
+                />
+                <Button
+                  variant="secondary"
+                  disabled={busy !== null || !blockInput.trim()}
+                  onClick={async () => {
+                    await actions.blockSender(blockInput.trim()).catch(() => undefined);
+                    setBlockInput("");
+                  }}
+                >
+                  <ShieldOff className="h-4 w-4" />
+                  Block
+                </Button>
+              </div>
+              {blocklist.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No blocked senders.</p>
+              ) : (
+                <ul className="divide-y divide-border rounded-md border border-border">
+                  {blocklist.map((addr) => (
+                    <li key={addr} className="flex items-center gap-2 px-3 py-2 text-sm">
+                      <span className="text-mono min-w-0 flex-1 truncate">{addr}</span>
+                      <Button size="sm" variant="ghost" onClick={() => void actions.unblockSender(addr)}>
+                        Unblock
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Up to {CONSTANTS.MaxBlocklist} entries. Blocked senders receive a <code className="text-mono">SenderBlocked</code> error.
+              </p>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="account" className="mt-4 space-y-4">
+            <div className="surface-panel space-y-2 p-4 sm:p-5 text-sm">
+              <h2 className="mb-2 text-lg font-semibold">Account</h2>
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-3 [&>span:last-child]:text-right [&>span:last-child]:wrap-anywhere">
+                <span className="text-muted-foreground">Address</span>
+                <span className="text-mono break-all text-right">{account ? (directory[account.address] ? `${directory[account.address]} ` : "") + shortAddr(account.address, 10) : "—"}</span>
+              </div>
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-3 [&>span:last-child]:text-right [&>span:last-child]:wrap-anywhere">
+                <span className="text-muted-foreground">Balance</span>
+                <span>{balance ?? "unavailable on this node"}</span>
+              </div>
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-3 [&>span:last-child]:text-right [&>span:last-child]:wrap-anywhere">
+                <span className="text-muted-foreground">Mailbox created</span>
+                <span>{mailbox ? new Date(mailbox.createdAt).toLocaleString() : "—"}</span>
+              </div>
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-3 [&>span:last-child]:text-right [&>span:last-child]:wrap-anywhere">
+                <span className="text-muted-foreground">Created at block</span>
+                <span className="text-mono">#{mailbox?.createdAtBlock ?? "—"}</span>
+              </div>
+            </div>
+            <DisplayNamePanel />
+            <ContactsPanel />
+
+            <div className="surface-panel space-y-3 p-4 sm:p-5">
+              <h2 className="text-lg font-semibold">Encryption keys</h2>
+              {!keys ? (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    {mailbox
+                      ? "This mailbox was created on another device, so its private key isn't here yet. Import your key backup to read your mail and send encrypted mail from this device."
+                      : "No key on this device yet. A RSA-4096 key is generated when you create your mailbox; its public part is stored on chain. If you already have a key backup, import it first."}
+                  </p>
+                  <Button variant="secondary" onClick={() => setImportOpen(true)}>
+                    <Upload className="h-4 w-4" />
+                    Import key
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    RSA-4096 key created {new Date(keys.createdAt).toLocaleString()}. The private key stays in this
+                    browser — export an encrypted backup to use the same key on another device.
+                  </p>
+                  <div className="space-y-1">
+                    <Label>Public key (on chain)</Label>
+                    <textarea
+                      readOnly
+                      spellCheck={false}
+                      value={publicKeyPem(keys)}
+                      className="text-mono h-24 w-full resize-none rounded-md border border-border bg-muted/40 p-2 text-xs"
+                    />
+                  </div>
+                  {showPrivate && (
+                    <div className="space-y-1">
+                      <Label>Private key (keep secret)</Label>
+                      <textarea
+                        readOnly
+                        spellCheck={false}
+                        value={privateKeyPem(keys)}
+                        className="text-mono h-32 w-full resize-none rounded-md border border-destructive/50 bg-muted/40 p-2 text-xs"
+                      />
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap">
+                    <Button variant="secondary" onClick={() => setShowPrivate((v) => !v)}>
+                      {showPrivate ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      {showPrivate ? "Hide private key" : "Show private key"}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => void navigator.clipboard.writeText(privateKeyPem(keys))}
+                    >
+                      <Copy className="h-4 w-4" />
+                      Copy private key
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        const blob = new Blob([privateKeyPem(keys)], { type: "text/plain" });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = "numail-private-key.pem";
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      }}
+                    >
+                      <Download className="h-4 w-4" />
+                      Download PEM (unencrypted)
+                    </Button>
+                    <Button variant="secondary" onClick={() => setExportOpen(true)}>
+                      <Lock className="h-4 w-4" />
+                      Export encrypted backup
+                    </Button>
+                    <Button variant="secondary" onClick={() => setImportOpen(true)}>
+                      <Upload className="h-4 w-4" />
+                      Import key
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="surface-panel p-4 sm:p-5">
+              <h2 className="mb-3 text-lg font-semibold">Pallet constants</h2>
+              <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
+                {Object.entries(CONSTANTS).map(([k, v]) => (
+                  <div key={k} className="rounded-md border border-border p-2">
+                    <dt className="text-xs text-muted-foreground wrap-anywhere">{k}</dt>
+                    <dd className="text-mono">{v}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+
+            <div className="surface-panel p-4 sm:p-5">
+              <h2 className="text-lg font-semibold">Danger zone</h2>
+              <p className="mt-1 mb-3 text-sm text-muted-foreground">
+                Clear the locally cached NuMail state (mailboxes, mail, decrypted payloads) on this device.
+              </p>
+              <Button variant="destructive" onClick={() => setResetOpen(true)}>
+                <Trash2 className="h-4 w-4" />
+                Clear local state
+              </Button>
+            </div>
+          </TabsContent>
+        </Tabs>
+      </div>
+
+      <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear local NuMail state?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Your mailbox, folders and decrypted message bodies cached on this device will be removed. This cannot be
+              undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={actions.resetChainData}>Clear state</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {account && (
+        <>
+          {keys && (
+            <ExportKeyDialog open={exportOpen} onOpenChange={setExportOpen} address={account.address} pair={keys} />
+          )}
+          <ImportKeyDialog
+            open={importOpen}
+            onOpenChange={setImportOpen}
+            address={account.address}
+            hasKey={Boolean(keys)}
+            onImported={() => setKeys(loadKeyPair(account.address))}
+          />
+        </>
+      )}
+    </AppShell>
+  );
+}
